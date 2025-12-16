@@ -174,6 +174,8 @@ with app.app_context():
 
 def limpiar_coordenada(coord):
     coord = coord.replace('\t', '').replace('"', '').strip()
+    # Normalizar símbolo de infinito (∞) a símbolo de grados (°)
+    coord = coord.replace('∞', '°')
     coord = re.sub(' +', ' ', coord)
     return coord
 
@@ -202,6 +204,9 @@ def corregir_longitud(coord_decimales):
 
 def dms_a_decimal(coord):
     try:
+        # Normalizar símbolo de infinito (∞) a símbolo de grados (°)
+        coord = coord.replace('∞', '°')
+        
         # Primero identificar la dirección (N, S, E, W)
         match_dir = re.search(r'([NSEW])$', coord.strip(), re.IGNORECASE)
         direccion = match_dir.group(1).upper() if match_dir else ''
@@ -276,8 +281,8 @@ def dms_a_decimal(coord):
         return np.nan
 
 def es_dms(coord):
-    # Verificar si tiene símbolos de grados, minutos o segundos
-    if re.search('[°\'"]', coord):
+    # Verificar si tiene símbolos de grados, minutos o segundos (incluyendo ∞ como equivalente a °)
+    if re.search('[°∞\'"]', coord):
         return True
     # Verificar si tiene dirección N, S, E, W
     if re.search(r'[NSEW]$', coord, re.IGNORECASE):
@@ -293,6 +298,8 @@ def procesar_coordenadas_dms(fila):
     
     coordenadas = str(fila['COORDENADAS'])
     coordenadas = coordenadas.replace('\n', ' ').replace('\r', ' ').strip()
+    # Normalizar símbolo de infinito (∞) a símbolo de grados (°)
+    coordenadas = coordenadas.replace('∞', '°')
     
     # Dividir por múltiples posibles separadores
     for sep in ['|', ';', ' y ', ',y,']:
@@ -326,6 +333,9 @@ def procesar_coordenadas_dms(fila):
         if not coord_pair:
             continue
         
+        # Normalizar símbolo de infinito (∞) a símbolo de grados (°) en el par de coordenadas
+        coord_pair = coord_pair.replace('∞', '°')
+        
         # Casos especiales: coordenadas tipo 18°4811.1N,103°5102.7W
         special_match = re.match(r'(\d+[°\s]\d{2}\d{2}\.\d+[NSEW])[,\s]+(\d+[°\s]\d{2}\d{2}\.\d+[NSEW])', coord_pair)
         if special_match:
@@ -346,12 +356,12 @@ def procesar_coordenadas_dms(fila):
             parts = coord_pair.split()
             
             patterns = [
-                r'([0-9\.]+[°][0-9\.]+[\'"][0-9\.]*[\"]*[NS])\s+([0-9\.]+[°][0-9\.]+[\'"][0-9\.]*[\"]*[WE])',
+                r'([0-9\.]+[°∞][0-9\.]+[\'"][0-9\.]*[\"]*[NS])\s+([0-9\.]+[°∞][0-9\.]+[\'"][0-9\.]*[\"]*[WE])',
                 r'([0-9\.]+\s+[0-9\.]+\s+[0-9\.]+\s*[NS])\s+([0-9\.]+\s+[0-9\.]+\s+[0-9\.]+\s*[WE])',
                 r'([0-9\.]+\s+[0-9\.]+\s*[NS])\s+([0-9\.]+\s+[0-9\.]+\s*[WE])',
                 r'([0-9\.]+\s*[NS])\s+([0-9\.]+\s*[WE])',
-                # Formatos para 18°4811.1N
-                r'(\d+[°\s]\d{2}\d{2}\.\d+[NS])\s+(\d+[°\s]\d{2}\d{2}\.\d+[WE])'
+                # Formatos para 18°4811.1N (incluyendo ∞)
+                r'(\d+[°∞\s]\d{2}\d{2}\.\d+[NS])\s+(\d+[°∞\s]\d{2}\d{2}\.\d+[WE])'
             ]
             
             lat_str = None
@@ -384,7 +394,7 @@ def procesar_coordenadas_dms(fila):
                 continue
         else:
             # Intentar interpretar como un formato especial sin espacios ni comas
-            match = re.match(r'(\d+[°\s]\d+\.\d+[NS])(\d+[°\s]\d+\.\d+[WE])', coord_pair)
+            match = re.match(r'(\d+[°∞\s]\d+\.\d+[NS])(\d+[°∞\s]\d+\.\d+[WE])', coord_pair)
             if match:
                 lat_str, lon_str = match.groups()
             elif re.search(r'[NS]', coord_pair, re.IGNORECASE) and re.search(r'[WE]', coord_pair, re.IGNORECASE):
@@ -649,60 +659,85 @@ def validacion_poligonos(tab):
                                filename='')
     
     elif tab == 'editar':
-        shp_id = request.args.get('shp_id')
-        if shp_id:
-            conn = get_db_connection()
-            # Get the specific record
-            shp_record = conn.execute('SELECT * FROM shp_records WHERE shp_id = ?', 
-                                     (shp_id,)).fetchone()
-            
-            coords_para_mapa = None
-            if shp_record and shp_record['geometry_wkt']:
-                # Convert WKT geometry to coordinates for the map
-                try:
-                    from shapely import wkt
-                    geom = wkt.loads(shp_record['geometry_wkt'])
-                    
-                    if geom.geom_type == 'Point':
-                        coords_para_mapa = [[geom.y, geom.x]]  # [lat, lng] for Leaflet
-                    elif geom.geom_type in ['Polygon', 'MultiPolygon']:
-                        # For polygons, extract coordinates in the format Leaflet expects
-                        if geom.geom_type == 'Polygon':
-                            exterior_coords = list(geom.exterior.coords)
-                        else:  # MultiPolygon - use the first polygon
-                            exterior_coords = list(geom.geoms[0].exterior.coords)
+        db_id = request.args.get('db_id')
+        if db_id:
+            try:
+                # Obtener el polígono de la base de datos usando el modelo Poligono
+                poligono = Poligono.query.get(db_id)
+                
+                if not poligono:
+                    flash('Polígono no encontrado.', 'error')
+                    return redirect(url_for('validacion_poligonos', tab='lista'))
+                
+                # Convertir el objeto Poligono a diccionario con el formato esperado
+                row_data = {
+                    'ID_POLIGONO': poligono.id_poligono,
+                    'IF': poligono.if_val,
+                    'ID_CREDITO': poligono.id_credito,
+                    'ID_PERSONA': poligono.id_persona,
+                    'SUPERFICIE': poligono.superficie,
+                    'ESTADO': corregir_codificacion(poligono.estado) if poligono.estado else '',
+                    'MUNICIPIO': corregir_codificacion(poligono.municipio) if poligono.municipio else '',
+                    'COORDENADAS': poligono.coordenadas,
+                    'COORDENADAS_CORREGIDAS': poligono.coordenadas_corregidas,
+                    'AREA_DIGITALIZADA': poligono.area_digitalizada,
+                    'ESTATUS': poligono.estatus,
+                    'COMENTARIOS': poligono.comentarios,
+                    'DESCRIPCION': poligono.descripcion,
+                    'db_id': poligono.id
+                }
+                
+                # Convertir coordenadas corregidas a formato para el mapa
+                coords_para_mapa = None
+                if poligono.coordenadas_corregidas:
+                    try:
+                        print(f"Procesando coordenadas para el mapa. Formato original: {poligono.coordenadas_corregidas[:100]}...")
+                        # Formato: "lat,lon | lat,lon | ..."
+                        coords_list = poligono.coordenadas_corregidas.split(' | ')
+                        print(f"Coordenadas divididas en {len(coords_list)} pares")
+                        coords_para_mapa = []
+                        for i, coord_pair in enumerate(coords_list):
+                            coord_pair = coord_pair.strip()
+                            if coord_pair and ',' in coord_pair:
+                                try:
+                                    lat_str, lon_str = coord_pair.split(',', 1)
+                                    lat = float(lat_str.strip())
+                                    lon = float(lon_str.strip())
+                                    # Formato para Leaflet: [lat, lng]
+                                    coords_para_mapa.append([lat, lon])
+                                    print(f"  Par {i+1}: {lat:.6f}, {lon:.6f}")
+                                except (ValueError, AttributeError) as e:
+                                    print(f"Error procesando coordenada {coord_pair}: {e}")
+                                    continue
+                            else:
+                                print(f"  Par {i+1} ignorado (formato inválido): {coord_pair}")
                         
-                        # Convert to [lat, lng] format for Leaflet
-                        coords_para_mapa = [[y, x] for x, y in exterior_coords]
-                    
-                    # Convert SQLite row to dict for modification
-                    shp_record = dict(shp_record)
-                    
-                    # Handle the atributos JSON field if it exists
-                    if 'atributos' in shp_record and shp_record['atributos']:
-                        try:
-                            if isinstance(shp_record['atributos'], str):
-                                shp_record['atributos'] = json.loads(shp_record['atributos'])
-                        except json.JSONDecodeError as e:
-                            app.logger.error(f"Error parsing atributos JSON: {e}")
-                            # Ensure it's a dictionary, even if empty
-                            shp_record['atributos'] = {"error": "No se pudieron cargar los atributos correctamente"}
-                except Exception as e:
-                    app.logger.error(f"Error processing geometry or attributes: {e}")
-                    if shp_record:
-                        shp_record = dict(shp_record) if not isinstance(shp_record, dict) else shp_record
-                        if 'atributos' in shp_record and not isinstance(shp_record['atributos'], dict):
-                            # If it's not a dict, create a simple one with the value
-                            value = str(shp_record['atributos']) if shp_record['atributos'] is not None else ""
-                            shp_record['atributos'] = {"valor": value}
-            
-            conn.close()
-            
-            return render_template('validacion_rapida_shp.html', 
-                                  tab=tab, 
-                                  shp_id=shp_id,
-                                  shp_record=shp_record, 
-                                  coords_para_mapa=coords_para_mapa)
+                        if coords_para_mapa:
+                            print(f"Total de coordenadas procesadas para el mapa: {len(coords_para_mapa)}")
+                        else:
+                            print(f"ADVERTENCIA: No se pudieron procesar las coordenadas. Formato original: {poligono.coordenadas_corregidas}")
+                    except Exception as e:
+                        print(f"Error al convertir coordenadas para el mapa: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"ADVERTENCIA: El polígono {db_id} no tiene coordenadas_corregidas")
+                
+                return render_template('validacion_poligonos.html', 
+                                      tab=tab, 
+                                      db_id=db_id,
+                                      row_data=row_data,
+                                      coords_para_mapa=coords_para_mapa)
+            except Exception as e:
+                print(f"ERROR AL CARGAR POLÍGONO PARA EDICIÓN: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                flash(f'Error al cargar el polígono: {str(e)}', 'error')
+                return redirect(url_for('validacion_poligonos', tab='lista'))
+        else:
+            # Si no se proporciona db_id, redirigir a la lista
+            flash('No se especificó un polígono para editar.', 'warning')
+            return redirect(url_for('validacion_poligonos', tab='lista'))
     
     elif tab == 'generar':
         try:
@@ -1115,7 +1150,7 @@ def get_historico_poligonos():
     """Endpoint para cargar y devolver los polígonos históricos como GeoJSON"""
     try:
         # Ruta al archivo shapefile histórico
-        historico_shapefile = "data/HISTORICO_ORDEN_40.shp"
+        historico_shapefile = "data/MEGA_CAPA_V1_OL.shp"
         
         # Leer el shapefile con geopandas
         historico_gdf = gpd.read_file(historico_shapefile)
@@ -1172,7 +1207,7 @@ def get_historico_poligonos_radio(polygon_id):
         lon_ref = float(first_point[1])
         
         # Ruta al archivo shapefile histórico
-        historico_shapefile = "data/HISTORICO_ORDEN_40.shp"
+        historico_shapefile = "data/MEGA_CAPA_V1_OL.shp"
         
         # Leer el shapefile con geopandas
         historico_gdf = gpd.read_file(historico_shapefile)
