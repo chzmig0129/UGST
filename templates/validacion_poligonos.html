@@ -2171,6 +2171,9 @@
                                         <a href="{{ url_for('generar_excel') }}" class="btn btn-success me-2">
                                             <i class="bi bi-file-earmark-excel me-1"></i> Generar Excel
                                         </a>
+                                        <button type="button" id="btn-generar-shp" class="btn btn-info me-2">
+                                            <i class="bi bi-geo-alt-fill me-1"></i> Generar SHP
+                                        </button>
                                         <button type="button" id="btn-generar-lote" class="btn btn-primary">
                                             <i class="bi bi-file-earmark-zip me-1"></i> Generar Fichas en Lote
                                         </button>
@@ -2408,6 +2411,40 @@
                             // Generar paquete completo con el formato tradicional
                             generarPaqueteCompleto(selectedRows);
                         }
+                    });
+                }
+
+                // Generar SHP con mensaje de conteo
+                const btnGenerarShp = document.getElementById('btn-generar-shp');
+                if (btnGenerarShp) {
+                    btnGenerarShp.addEventListener('click', function() {
+                        // Primero obtener el conteo de geometrías
+                        fetch('/generar_shp_count')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.error) {
+                                    mostrarError(data.error);
+                                    return;
+                                }
+                                
+                                const count = data.count;
+                                if (count === 0) {
+                                    mostrarError('No se encontraron polígonos con coordenadas válidas para generar el archivo SHP');
+                                    return;
+                                }
+                                
+                                // Mostrar mensaje de éxito con el conteo
+                                mostrarMensajeExito(`Se creó SHP con ${count} geometría${count !== 1 ? 's' : ''}`);
+                                
+                                // Iniciar la descarga del archivo
+                                window.location.href = "{{ url_for('generar_shp') }}";
+                            })
+                            .catch(error => {
+                                console.error('Error al obtener conteo:', error);
+                                // Si hay error al obtener el conteo, intentar descargar de todas formas
+                                mostrarError('Error al obtener el conteo de geometrías, pero se iniciará la descarga');
+                                window.location.href = "{{ url_for('generar_shp') }}";
+                            });
                     });
                 }
 

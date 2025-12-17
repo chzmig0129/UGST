@@ -2738,13 +2738,16 @@ def generar_paquete_completo_con_plantilla():
 
 @app.route('/generar_excel', methods=['GET'])
 def generar_excel():
-    """Ruta para generar un archivo Excel con todos los registros de la base de datos"""
+    """Ruta para generar un archivo Excel con todos los registros de estatus 7 de la base de datos"""
     try:
-        # Obtener todos los polígonos de la base de datos
-        poligonos = Poligono.query.all()
+        # Obtener solo los polígonos con estatus 7 de la base de datos
+        # El estatus puede estar guardado como string '7' o número 7
+        poligonos = Poligono.query.filter(
+            (Poligono.estatus == '7') | (Poligono.estatus == 7)
+        ).all()
         
         if not poligonos:
-            flash('No hay datos disponibles para generar el archivo Excel', 'warning')
+            flash('No hay datos disponibles con estatus 7 para generar el archivo Excel', 'warning')
             return redirect(url_for('validacion_poligonos', tab='generar'))
         
         # Crear un DataFrame con las columnas específicas requeridas
@@ -2788,6 +2791,186 @@ def generar_excel():
         traceback.print_exc()
         flash(f'Error al generar archivo Excel: {str(e)}', 'error')
         return redirect(url_for('validacion_poligonos', tab='generar'))
+
+@app.route('/generar_shp', methods=['GET'])
+def generar_shp():
+    """Ruta para generar un archivo shapefile con todos los polígonos de estatus 7 usando coordenadas corregidas"""
+    try:
+        # Obtener solo los polígonos con estatus 7 de la base de datos
+        # El estatus puede estar guardado como string '7' o número 7
+        poligonos = Poligono.query.filter(
+            (Poligono.estatus == '7') | (Poligono.estatus == 7)
+        ).all()
+        
+        if not poligonos:
+            flash('No hay datos disponibles con estatus 7 para generar el archivo SHP', 'warning')
+            return redirect(url_for('validacion_poligonos', tab='generar'))
+        
+        # Crear un objeto de memoria para el archivo ZIP
+        zip_buffer = io.BytesIO()
+        
+        # Crear un directorio temporal para los archivos del shapefile
+        with tempfile.TemporaryDirectory() as tempdir:
+            # Crear el writer de shapefile
+            w = shapefile.Writer(os.path.join(tempdir, 'poligonos'))
+            
+            # Definir campos de atributos
+            w.field('ID_POLIG', 'C', 40)
+            w.field('IF', 'C', 40)
+            w.field('ID_CRED', 'C', 40)
+            w.field('ID_PERS', 'C', 40)
+            w.field('SUPERF', 'N', 10, 4)
+            w.field('ESTADO', 'C', 40)
+            w.field('MUNICIP', 'C', 40)
+            w.field('AREA_HA', 'N', 10, 4)
+            w.field('ESTATUS', 'C', 10)
+            w.field('COMENT', 'C', 254)
+            
+            # Contador de polígonos válidos
+            poligonos_validos = 0
+            
+            # Procesar cada polígono
+            for poligono in poligonos:
+                # Obtener coordenadas del polígono (priorizar coordenadas corregidas)
+                coords = []
+                coordenadas_a_usar = poligono.coordenadas_corregidas or poligono.coordenadas
+                
+                if coordenadas_a_usar:
+                    # Verificar qué separador usa: ' | ' o '|'
+                    if ' | ' in coordenadas_a_usar:
+                        pares = coordenadas_a_usar.split(' | ')
+                    else:
+                        pares = coordenadas_a_usar.split('|')
+                    
+                    for par in pares:
+                        par = par.strip()
+                        if par and ',' in par:
+                            try:
+                                partes = par.split(',')
+                                lat = float(partes[0].strip())
+                                lon = float(partes[1].strip())
+                                coords.append([lon, lat])  # Shapefile usa [lon, lat]
+                            except (ValueError, IndexError) as e:
+                                print(f"Error al procesar coordenada {par}: {e}")
+                                continue
+                
+                # Si no hay suficientes coordenadas, saltar este polígono
+                if len(coords) < 3:
+                    if len(coords) == 1:
+                        # Crear un punto
+                        w.point(coords[0][0], coords[0][1])
+                        w.record(
+                            poligono.id_poligono or '',
+                            poligono.if_val or '',
+                            poligono.id_credito or '',
+                            poligono.id_persona or '',
+                            poligono.superficie or 0,
+                            corregir_codificacion(poligono.estado) or '',
+                            corregir_codificacion(poligono.municipio) or '',
+                            poligono.area_digitalizada or 0,
+                            poligono.estatus or '',
+                            poligono.comentarios or ''
+                        )
+                        poligonos_validos += 1
+                    continue
+                else:
+                    # Crear un polígono
+                    w.poly([coords])
+                    w.record(
+                        poligono.id_poligono or '',
+                        poligono.if_val or '',
+                        poligono.id_credito or '',
+                        poligono.id_persona or '',
+                        poligono.superficie or 0,
+                        corregir_codificacion(poligono.estado) or '',
+                        corregir_codificacion(poligono.municipio) or '',
+                        poligono.area_digitalizada or 0,
+                        poligono.estatus or '',
+                        poligono.comentarios or ''
+                    )
+                    poligonos_validos += 1
+            
+            # Si no hay polígonos válidos, retornar error
+            if poligonos_validos == 0:
+                flash('No se encontraron polígonos con coordenadas válidas para generar el archivo SHP', 'warning')
+                return redirect(url_for('validacion_poligonos', tab='generar'))
+            
+            # Guardar el shapefile
+            w.close()
+            
+            # Crear archivo .prj para la proyección (WGS84)
+            with open(os.path.join(tempdir, 'poligonos.prj'), 'w') as prj:
+                prj.write('GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]')
+            
+            # Comprimir todos los archivos en un ZIP
+            with zipfile.ZipFile(zip_buffer, 'w') as zf:
+                for filename in os.listdir(tempdir):
+                    filepath = os.path.join(tempdir, filename)
+                    zf.write(filepath, filename)
+        
+        # Regresar al inicio del buffer
+        zip_buffer.seek(0)
+        
+        # Guardar el número de geometrías en la sesión para mostrar el mensaje
+        session['shp_geometrias_count'] = poligonos_validos
+        
+        # Crear una respuesta con el archivo ZIP
+        return send_file(
+            zip_buffer,
+            as_attachment=True,
+            download_name='poligonos_export.zip',
+            mimetype='application/zip'
+        )
+        
+    except Exception as e:
+        print(f"ERROR AL GENERAR SHP: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        flash(f'Error al generar archivo SHP: {str(e)}', 'error')
+        return redirect(url_for('validacion_poligonos', tab='generar'))
+
+@app.route('/generar_shp_count', methods=['GET'])
+def generar_shp_count():
+    """Ruta auxiliar para obtener el número de geometrías válidas antes de generar el SHP"""
+    try:
+        # Obtener solo los polígonos con estatus 7 de la base de datos
+        poligonos = Poligono.query.filter(
+            (Poligono.estatus == '7') | (Poligono.estatus == 7)
+        ).all()
+        
+        if not poligonos:
+            return jsonify({'count': 0, 'error': 'No hay datos disponibles con estatus 7'})
+        
+        # Contar polígonos con coordenadas válidas
+        poligonos_validos = 0
+        for poligono in poligonos:
+            coordenadas_a_usar = poligono.coordenadas_corregidas or poligono.coordenadas
+            if coordenadas_a_usar:
+                if ' | ' in coordenadas_a_usar:
+                    pares = coordenadas_a_usar.split(' | ')
+                else:
+                    pares = coordenadas_a_usar.split('|')
+                
+                coords = []
+                for par in pares:
+                    par = par.strip()
+                    if par and ',' in par:
+                        try:
+                            partes = par.split(',')
+                            lat = float(partes[0].strip())
+                            lon = float(partes[1].strip())
+                            coords.append([lon, lat])
+                        except (ValueError, IndexError):
+                            continue
+                
+                if len(coords) >= 1:  # Al menos un punto válido
+                    poligonos_validos += 1
+        
+        return jsonify({'count': poligonos_validos})
+        
+    except Exception as e:
+        print(f"ERROR AL CONTAR GEOMETRÍAS: {str(e)}")
+        return jsonify({'count': 0, 'error': str(e)})
 
 # Import necessary modules for SHP handling
 import zipfile
